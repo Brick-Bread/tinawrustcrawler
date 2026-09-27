@@ -1,0 +1,133 @@
+# Evidence-led seeds. Categories: name, title, reverse, phrase.
+# Name seeds try the full name, surname, then first name because those aliases worked.
+# Existing codes and previous attempts are removed before any request.
+
+# Backstage and art-book credits: full names have produced several real codes.
+name|Ian Worrel
+name|Bud Gleeful
+name|Matt Chapman
+name|Sean Jimenez
+name|Phil Rynda
+name|Mike Rianda
+name|Rob Renzetti
+name|Emmy Cicierega
+name|Alex Hirsch
+name|Matt Braly
+name|Jason Ritter
+name|Kristen Schaal
+name|J K Simmons
+name|James Baxter
+name|Sunil Hall
+name|John Aoshima
+name|Stephen Sandoval
+name|Tim McKeon
+name|Josh Weinstein
+name|Mark Rizzo
+name|Kevin Locarro
+name|Sara Jane Sherman
+name|Carla Arcuri
+name|Huy Luong
+name|Nathan Fillion
+name|Lance Bass
+name|Paul Robertson
+name|Jorge Gutierrez
+name|Stephen Root
+name|Randy Myers
+name|Elle Michalka
+name|Josh Parpan
+name|Amanda Rynda
+name|Cynthia McIntosh
+name|Jeffrey Thompson
+name|Larry Leichliter
+name|Sun Jae Lee
+name|Sage Cotugno
+name|Amelia Lorenz
+name|Sarah Craig
+name|Jamie Chang
+name|Aldin Baroza
+name|Ben Holm
+name|Mira Lark Crowell
+name|James Hathcock
+name|Suzanna Olson
+name|Robert Lacko
+name|Kelsey Raggio
+name|Mason McGrew
+name|Karen Wong
+name|Rachel Artmont
+name|Ryan Burkhard
+name|Ginny McSwain
+name|Mark Stephan Kondracki
+name|Heather Olsen
+name|Aran Tanchum
+name|Fil Brown
+name|Tony Diaz
+name|Jonathan Gomez
+name|Melissa Ellis
+name|Kyle Hayden
+name|Sean Dempsey
+
+# Documented reverse-code pattern: LLIB, REPPID, DROFNATS, LTOLOXA.
+reverse|Wendy
+reverse|Gideon
+reverse|Soos
+reverse|Mabel
+reverse|Pacifica
+reverse|Fiddleford
+reverse|McGucket
+reverse|Stanley
+reverse|Grunkle Stan
+reverse|Bill Cipher
+reverse|Mystery Shack
+reverse|Gravity Falls
+
+# Documented titles and production files suggest other exact title phrases.
+title|The Art of Gravity Falls
+title|The Book of Bill
+title|The Mystery Shack
+title|The Society of the Blind Eye
+title|The Cipher Hunt
+title|The Northwest Mansion Mystery
+title|Dipper's Guide to the Unexplained
+title|Mabel's Guide to Life
+title|Fixin' It with Soos
+title|Gravity Falls Pilot
+title|Gravity Falls Shorts
+title|Stan's Tattoo
+title|The Stan O War
+title|The Stan O War II
+title|Between the Pines
+title|The Lost Legends
+title|Journal Three
+title|The Journals
+
+# WIP.PSD, storyboards, concept art, animatics and backup codes suggest file labels.
+phrase|WIP
+phrase|PSD
+phrase|Concept Art
+phrase|Character Design
+phrase|Character Designs
+phrase|Model Sheet
+phrase|Model Sheets
+phrase|Color Keys
+phrase|Background Art
+phrase|Background Paintings
+phrase|Storyboards
+phrase|Storyboard Revisions
+phrase|Animatics
+phrase|Pitch Bible
+phrase|Pitch Deck
+phrase|Unused Designs
+phrase|Deleted Scenes
+phrase|Alternate Ending
+phrase|Production Art
+phrase|Production Notes
+phrase|Behind The Scenes
+phrase|Making Of Gravity Falls
+phrase|Art Book
+phrase|Art Of Gravity Falls
+phrase|Backstage Pass
+phrase|Backup Files
+phrase|More Backups
+phrase|Secret Files
+phrase|Lost Files
+
