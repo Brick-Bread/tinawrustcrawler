@@ -1,10 +1,10 @@
-//! Bounded Backstage code checker. Saves the complete body of every HTTP 200.
+//! Continuous Backstage code checker. Saves the complete body of every HTTP 200.
 //! Uses Windows' curl.exe for multipart HTTPS; no Cargo dependencies are needed.
 
 use std::collections::HashSet;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,6 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const ENDPOINT: &str = "https://codes.thisisnotawebsitedotcom.com/";
+const LOAD_TEST_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz0123456789?∞§";
+const LOAD_TEST_SECONDS: u64 = 3600;
+const LOAD_TEST_MAX_CODES: usize = 18_000;
 
 #[derive(Clone)]
 struct Options {
@@ -20,6 +23,7 @@ struct Options {
     known: PathBuf,
     doc_file: PathBuf,
     results: PathBuf,
+    successes: PathBuf,
     downloads: PathBuf,
     skip_logs: Vec<PathBuf>,
     limit: usize,
@@ -27,6 +31,7 @@ struct Options {
     rate: f64,
     timeout: u64,
     assets_only: bool,
+    load_test: bool,
 }
 
 impl Default for Options {
@@ -36,18 +41,22 @@ impl Default for Options {
             known: PathBuf::from("known_codes.txt"),
             doc_file: PathBuf::from("backstage_doc_snapshot.txt"),
             results: PathBuf::from("results.jsonl"),
-            downloads: PathBuf::from("downloads"),
+            successes: PathBuf::from("successes.txt"),
+            downloads: env::var_os("USERPROFILE")
+                .map(|home| PathBuf::from(home).join("Downloads").join("tinawrustcrawler-assets"))
+                .unwrap_or_else(|| PathBuf::from("downloads")),
             skip_logs: vec![
                 PathBuf::from("backstage_500_results.jsonl"),
                 PathBuf::from("backstage_next_results.jsonl"),
                 PathBuf::from("backstage_fast_results.jsonl"),
                 PathBuf::from("backstage_live_results.jsonl"),
             ],
-            limit: 500,
+            limit: 0,
             workers: 4,
             rate: 4.0,
             timeout: 20,
             assets_only: false,
+            load_test: false,
         }
     }
 }
@@ -57,16 +66,18 @@ fn options() -> Result<Options, String> {
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--help" || flag == "-h" {
-            println!("Usage: cargo run --release -- [--assets-only] [--wordlist FILE] [--known FILE] [--doc-file FILE] [--results FILE] [--downloads DIR] [--skip-log FILE] [--limit 1..500] [--workers 1..4] [--rate 0..4] [--timeout SECONDS]");
+            println!("Usage: cargo run --release -- [--load-test | --assets-only] [--wordlist FILE] [--known FILE] [--doc-file FILE] [--results FILE] [--successes FILE] [--downloads DIR] [--skip-log FILE] [--limit N (0 = all)] [--workers N] [--rate REQUESTS_PER_SECOND] [--timeout SECONDS]");
             std::process::exit(0);
         }
         if flag == "--assets-only" { o.assets_only = true; continue; }
+        if flag == "--load-test" { o.load_test = true; continue; }
         let value = args.next().ok_or_else(|| format!("Missing value for {flag}"))?;
         match flag.as_str() {
             "--wordlist" => o.wordlist = value.into(),
             "--known" => o.known = value.into(),
             "--doc-file" => o.doc_file = value.into(),
             "--results" => o.results = value.into(),
+            "--successes" => o.successes = value.into(),
             "--downloads" => o.downloads = value.into(),
             "--skip-log" => o.skip_logs.push(value.into()),
             "--limit" => o.limit = value.parse().map_err(|_| "Invalid limit")?,
@@ -76,12 +87,17 @@ fn options() -> Result<Options, String> {
             _ => return Err(format!("Unknown option: {flag}")),
         }
     }
-    if !(1..=500).contains(&o.limit)
-        || !(1..=4).contains(&o.workers)
-        || !(o.rate > 0.0 && o.rate <= 4.0)
+    if o.workers == 0
+        || !o.rate.is_finite()
+        || o.rate <= 0.0
         || o.timeout == 0
     {
-        return Err("Use limit 1..500, workers 1..4, rate >0..4, timeout >0".into());
+        return Err("Use workers >0, a finite rate >0, and timeout >0 (limit 0 means all)".into());
+    }
+    if o.load_test {
+        if o.assets_only { return Err("Choose either --load-test or --assets-only".into()); }
+        if o.rate > 5.0 { return Err("Load test rate cannot exceed 5 requests/second".into()); }
+        if o.workers > 4 { return Err("Load test worker count cannot exceed 4".into()); }
     }
     Ok(o)
 }
@@ -173,10 +189,42 @@ fn candidates(o: &Options) -> io::Result<Vec<(String, String)>> {
         }
         for variant in variants {
             consider(variant, &mut seen, &done, &known, &doc, &mut output);
-            if output.len() >= o.limit { return Ok(output); }
+            if o.limit != 0 && output.len() >= o.limit { return Ok(output); }
         }
     }
     Ok(output)
+}
+
+struct LoadTestCodes {
+    alphabet: Vec<char>,
+    digits: Vec<usize>,
+}
+
+impl LoadTestCodes {
+    fn new() -> Self {
+        Self { alphabet: LOAD_TEST_ALPHABET.chars().collect(), digits: Vec::new() }
+    }
+
+    fn next(&mut self) -> (String, String) {
+        let phrase: String = self.digits.iter().map(|&n| self.alphabet[n]).collect();
+        let code = format!("wip{phrase}");
+        if self.digits.is_empty() {
+            self.digits.push(0);
+        } else {
+            let mut at = self.digits.len();
+            loop {
+                at -= 1;
+                self.digits[at] += 1;
+                if self.digits[at] < self.alphabet.len() { break; }
+                self.digits[at] = 0;
+                if at == 0 {
+                    self.digits = vec![0; self.digits.len() + 1];
+                    break;
+                }
+            }
+        }
+        (phrase, code)
+    }
 }
 
 fn json(s: &str) -> String {
@@ -240,7 +288,6 @@ fn save_assets(html_path: &Path, stem: &str, o: &Options, gate: &Mutex<Gate>) ->
     let mut seen = HashSet::new();
     let mut saved = Vec::new();
     for (position, _) in html.match_indices(PREFIX) {
-        if seen.len() >= 20 { break; }
         let rest = &html[position..];
         let end = rest.find(|c: char| matches!(c, '"' | '\'' | '<' | '>' | ' ' | '\r' | '\n'))
             .unwrap_or(rest.len());
@@ -259,7 +306,7 @@ fn save_assets(html_path: &Path, stem: &str, o: &Options, gate: &Mutex<Gate>) ->
         thread::sleep(pause);
         let result = Command::new("curl.exe")
             .args(["--silent", "--show-error", "--fail", "--location", "--max-time", "60",
-                "--max-filesize", "25000000", "--output"])
+                "--output"])
             .arg(&target)
             .arg(url)
             .output();
@@ -274,7 +321,12 @@ fn save_assets(html_path: &Path, stem: &str, o: &Options, gate: &Mutex<Gate>) ->
     saved
 }
 
-fn check(index: usize, phrase: &str, code: &str, o: &Options, gate: &Mutex<Gate>) -> String {
+struct CheckResult {
+    record: String,
+    success: Option<String>,
+}
+
+fn check(index: usize, phrase: &str, code: &str, o: &Options, gate: &Mutex<Gate>) -> CheckResult {
     let stem = filename_stem(code);
     let temporary = o.downloads.join(format!(".{stem}.{index}.part"));
     for attempt in 1..=3 {
@@ -298,11 +350,13 @@ fn check(index: usize, phrase: &str, code: &str, o: &Options, gate: &Mutex<Gate>
             }
             Err(e) => (0, String::new(), e.to_string()),
         };
-        if status == 429 && attempt < 3 {
+        if status == 429 {
             let delay = Duration::from_secs(30);
             gate.lock().unwrap().backoff(delay);
-            let _ = fs::remove_file(&temporary);
-            continue;
+            if attempt < 3 {
+                let _ = fs::remove_file(&temporary);
+                continue;
+            }
         }
         let mut saved = String::new();
         let mut bytes = 0;
@@ -310,27 +364,87 @@ fn check(index: usize, phrase: &str, code: &str, o: &Options, gate: &Mutex<Gate>
         if status == 200 {
             let target = o.downloads.join(format!("{stem}.{}", extension(&mime)));
             if let Ok(metadata) = fs::metadata(&temporary) { bytes = metadata.len(); }
-            match fs::rename(&temporary, &target) {
-                Ok(()) => {
+            if target.exists() {
+                let _ = fs::remove_file(&temporary);
+                saved = target.to_string_lossy().into_owned();
+                if mime.starts_with("text/html") { assets = save_assets(&target, &stem, o, gate); }
+            } else {
+                match fs::rename(&temporary, &target) {
+                    Ok(()) => {
                     saved = target.to_string_lossy().into_owned();
                     if mime.starts_with("text/html") { assets = save_assets(&target, &stem, o, gate); }
+                    }
+                    Err(e) => saved = format!("SAVE ERROR: {e}"),
                 }
-                Err(e) => saved = format!("SAVE ERROR: {e}"),
             }
         } else {
             let _ = fs::remove_file(&temporary);
         }
-        println!("[{index:04}] {phrase} -> {code} -> HTTP {status} | {mime} | {bytes} bytes | {saved} {error}");
+        let message = format!("[{index:04}] {phrase} -> {code} -> HTTP {status} | {mime} | {bytes} bytes | {saved} {error}");
+        if io::stdout().is_terminal() {
+            let color = if status == 200 { "\x1b[32m" } else { "\x1b[31m" };
+            println!("{color}{message}\x1b[0m");
+        } else {
+            println!("{message}");
+        }
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let assets_json = assets.iter().map(|s| json(s)).collect::<Vec<_>>().join(",");
-        return format!("{{\"checked_at_unix\":{timestamp},\"phrase\":{},\"code\":{},\"status\":{status},\"content_type\":{},\"bytes\":{bytes},\"saved\":{},\"assets\":[{assets_json}],\"error\":{}}}\n",
+        let record = format!("{{\"checked_at_unix\":{timestamp},\"phrase\":{},\"code\":{},\"status\":{status},\"content_type\":{},\"bytes\":{bytes},\"saved\":{},\"assets\":[{assets_json}],\"error\":{}}}\n",
             json(phrase), json(code), json(&mime), json(&saved), json(&error));
+        let success = (status == 200).then(|| format!("{phrase}\t{code}\t{saved}\n"));
+        return CheckResult { record, success };
     }
     unreachable!()
 }
 
+fn run_load_test(o: Options) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(&o.downloads)?;
+    for path in [&o.results, &o.successes] {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut log = OpenOptions::new().create(true).append(true).open(&o.results)?;
+    let mut successes = OpenOptions::new().create(true).append(true).open(&o.successes)?;
+    let gate = Mutex::new(Gate { next: Instant::now() });
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(LOAD_TEST_SECONDS);
+    thread::spawn(|| {
+        thread::sleep(Duration::from_secs(LOAD_TEST_SECONDS));
+        eprintln!("One-hour load-test deadline reached. Stopping.");
+        std::process::exit(0);
+    });
+    let mut codes = LoadTestCodes::new();
+    let mut issued = 0;
+    println!("Bounded load test: at most 5 requests/second, {} code attempts, and one hour. Press Ctrl+C to stop early.", LOAD_TEST_MAX_CODES);
+    while issued < LOAD_TEST_MAX_CODES && Instant::now() < deadline {
+        let batch: Vec<_> = (0..o.workers.min(LOAD_TEST_MAX_CODES - issued))
+            .map(|_| codes.next()).collect();
+        let opts = &o;
+        let pacing = &gate;
+        let results: Vec<CheckResult> = thread::scope(|scope| {
+            let handles: Vec<_> = batch.into_iter().enumerate().map(|(offset, (phrase, code))| {
+                scope.spawn(move || check(issued + offset + 1, &phrase, &code, opts, pacing))
+            }).collect();
+            handles.into_iter().map(|handle| handle.join().expect("worker panicked")).collect()
+        });
+        issued += results.len();
+        for result in results {
+            log.write_all(result.record.as_bytes())?;
+            if let Some(line) = result.success {
+                successes.write_all(line.as_bytes())?;
+            }
+        }
+        log.flush()?;
+        successes.flush()?;
+    }
+    println!("Load test finished after {} code attempts and {} seconds.", issued, started.elapsed().as_secs());
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let o = options()?;
+    if o.load_test { return run_load_test(o); }
     if o.assets_only {
         let gate = Mutex::new(Gate { next: Instant::now() });
         let mut total = 0;
@@ -344,38 +458,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("Saved or confirmed {total} first-party assets from existing HTML responses.");
         return Ok(());
     }
-    let work = candidates(&o)?;
-    if work.is_empty() {
-        println!("No untested candidates in this batch.");
-        return Ok(());
-    }
     fs::create_dir_all(&o.downloads)?;
     if let Some(parent) = o.results.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
+    if let Some(parent) = o.successes.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
     let log = Arc::new(Mutex::new(OpenOptions::new().create(true).append(true).open(&o.results)?));
+    let successes = Arc::new(Mutex::new(OpenOptions::new().create(true).append(true).open(&o.successes)?));
     let gate = Arc::new(Mutex::new(Gate { next: Instant::now() }));
-    let index = Arc::new(AtomicUsize::new(0));
-    let work = Arc::new(work);
     let o = Arc::new(o);
-    println!("Checking {} codes at up to {} requests/second; saving every HTTP 200 to {}", work.len(), o.rate, o.downloads.display());
-    thread::scope(|scope| {
-        for _ in 0..o.workers {
-            let (work, index, gate, log, o) = (work.clone(), index.clone(), gate.clone(), log.clone(), o.clone());
-            scope.spawn(move || loop {
-                let i = index.fetch_add(1, Ordering::Relaxed);
-                if i >= work.len() { break; }
-                let (phrase, code) = &work[i];
-                let record = check(i + 1, phrase, code, &o, &gate);
-                let mut file = log.lock().unwrap();
-                if let Err(e) = file.write_all(record.as_bytes()).and_then(|_| file.flush()) {
-                    eprintln!("Could not write result log: {e}");
-                }
-            });
+    println!("Watching {} for candidates; configured for {} workers and {} requests/second. Press Ctrl+C to stop.", o.wordlist.display(), o.workers, o.rate);
+    loop {
+        let work = candidates(&o)?;
+        if work.is_empty() {
+            println!("No untested candidates. Checking again in 30 seconds; press Ctrl+C to stop.");
+            thread::sleep(Duration::from_secs(30));
+            continue;
         }
-    });
-    println!("Finished this bounded batch. Results: {}", o.results.display());
-    Ok(())
+        println!("Checking {} codes; saving every HTTP 200 to {}", work.len(), o.downloads.display());
+        let index = Arc::new(AtomicUsize::new(0));
+        let work = Arc::new(work);
+        thread::scope(|scope| {
+            for _ in 0..o.workers.min(work.len()) {
+                let (work, index, gate, log, successes, o) = (work.clone(), index.clone(), gate.clone(), log.clone(), successes.clone(), o.clone());
+                scope.spawn(move || loop {
+                    let i = index.fetch_add(1, Ordering::Relaxed);
+                    if i >= work.len() { break; }
+                    let (phrase, code) = &work[i];
+                    let result = check(i + 1, phrase, code, &o, &gate);
+                    let mut file = log.lock().unwrap();
+                    if let Err(e) = file.write_all(result.record.as_bytes()).and_then(|_| file.flush()) {
+                        eprintln!("Could not write result log: {e}");
+                    }
+                    if let Some(line) = result.success {
+                        let mut file = successes.lock().unwrap();
+                        if let Err(e) = file.write_all(line.as_bytes()).and_then(|_| file.flush()) {
+                            eprintln!("Could not write successes file: {e}");
+                        }
+                    }
+                });
+            }
+        });
+        println!("Batch complete. Results: {}", o.results.display());
+    }
 }
 
 fn main() {
