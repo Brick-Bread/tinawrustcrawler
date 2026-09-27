@@ -1,0 +1,7 @@
+[package]
+name = "backstage_hunter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
